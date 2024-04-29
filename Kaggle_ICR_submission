@@ -1,0 +1,97 @@
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import catboost as cat
+from sklearn.impute import KNNImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import OrdinalEncoder,StandardScaler
+from sklearn.metrics import log_loss
+from imblearn.over_sampling import RandomOverSampler
+import warnings
+warnings.filterwarnings("ignore")
+
+pd.set_option('display.max_columns', 100)
+
+df_train_val=pd.read_csv('/kaggle/input/icr-identify-age-related-conditions/train.csv')
+df_test=pd.read_csv('/kaggle/input/icr-identify-age-related-conditions/test.csv')
+greeks=pd.read_csv("/kaggle/input/icr-identify-age-related-conditions/greeks.csv")
+
+greeks["Alpha"].value_counts()
+
+#Classとの相関係数が0.05以上のカラムのみを取得する
+col_larger_corr=df_train_val.corr()[df_train_val.corr().abs()["Class"]>=0.05].index
+X_train_val=df_train_val[col_larger_corr]
+
+#Classを削除する
+col_larger_corr=col_larger_corr[:-1]
+X_test=df_test[col_larger_corr]
+
+ros = RandomOverSampler(random_state=0)
+X_train_val_ros,_=ros.fit_resample(X_train_val,greeks["Alpha"])
+
+X_train_val=X_train_val_ros.drop("Class",axis=1)
+y_train_val=X_train_val_ros["Class"]
+X_test=X_test[col_larger_corr]
+
+cols=X_train_val.columns
+scaler=StandardScaler().fit(X_train_val[cols])
+X_train_val[cols]=scaler.transform(X_train_val[cols])
+X_test[cols]=scaler.transform(X_test[cols])
+
+X_train_val.isnull().sum().sort_values(ascending=False).head(8)
+
+imputer=KNNImputer(n_neighbors=3)
+imputer.set_output(transform="pandas")
+X_train_val=imputer.fit_transform(X_train_val)
+X_test=imputer.fit_transform(X_test)
+
+X_train_val.isnull().sum().sort_values(ascending=False).head(5)
+
+params_LGBM= {
+        'objective':'binary',
+        "verbosity": -1,
+        'max_bin': 600,
+        'learning_rate': 0.05,
+        'num_leaves': 70,
+        'max_depth': 2
+        }
+
+params_CAT= {"iterations":500,
+             'learning_rate': 0.05,
+             "logging_level":"Silent" 
+            }
+
+model_LGBM=lgb.LGBMClassifier(**params_LGBM)
+model_CAT=cat.CatBoostClassifier(**params_CAT)
+model_Linear=LogisticRegression()
+model_RFC=RandomForestClassifier(n_estimators=100,max_depth=5,random_state=0)
+
+model_LGBM.fit(X_train_val,y_train_val)
+proba_LGBM=model_LGBM.predict_proba(X_test)
+proba_LGBM
+
+model_CAT.fit(X_train_val,y_train_val)
+proba_CAT=model_CAT.predict_proba(X_test)
+proba_CAT
+
+model_Linear.fit(X_train_val,y_train_val)
+proba_Linear=model_Linear.predict_proba(X_test)
+
+model_RFC.fit(X_train_val,y_train_val)
+proba_RFC=model_RFC.predict_proba(X_test)
+
+p0=((proba_LGBM+proba_CAT+proba_Linear+proba_RFC)/4)[:,0]
+# p0[p0>=0.5]=1
+# p0[p0<0.5]=0
+p1=1-p0
+
+df_submission=pd.DataFrame(df_test["Id"],columns=["Id"])
+df_submission["Class_0"]=p0
+df_submission["Class_1"]=p1
+
+df_submission.to_csv('submission.csv', index=False)
+
+df_submission
